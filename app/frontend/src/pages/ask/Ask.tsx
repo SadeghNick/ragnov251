@@ -38,7 +38,7 @@ export function Component(): JSX.Element {
     const [sendTextSources, setSendTextSources] = useState<boolean>(true);
     const [sendImageSources, setSendImageSources] = useState<boolean>(false);
     const [includeCategory, setIncludeCategory] = useState<string>("");
-
+    const [selectedBlob, setSelectedBlob] = useState<string>("");
     const [excludeCategory, setExcludeCategory] = useState<string>("");
     const [question, setQuestion] = useState<string>("");
     const [searchTextEmbeddings, setSearchTextEmbeddings] = useState<boolean>(true);
@@ -174,7 +174,8 @@ export function Component(): JSX.Element {
                         use_agentic_knowledgebase: useAgenticKnowledgeBase,
                         use_web_source: webSourceSupported ? webSourceEnabled : false,
                         use_sharepoint_source: sharePointSourceSupported ? sharePointSourceEnabled : false,
-                        ...(seed !== null ? { seed: seed } : {})
+                        ...(seed !== null ? { seed: seed } : {}),
+                        ...(selectedBlob.length > 0 ? { selected_blob: selectedBlob } : {})
                     }
                 },
                 // AI Chat Protocol: Client must pass on any session state received from the server
@@ -275,6 +276,10 @@ export function Component(): JSX.Element {
                     return;
                 }
                 setSharePointSourceEnabled(value);
+                break;
+
+            case "selectedBlob":
+                setSelectedBlob(value);
                 break;
         }
     };
@@ -377,6 +382,7 @@ export function Component(): JSX.Element {
             >
                 <Settings
                     promptTemplate={promptTemplate}
+                    selectedBlob={selectedBlob}
                     promptTemplatePrefix={promptTemplatePrefix}
                     promptTemplateSuffix={promptTemplateSuffix}
                     temperature={temperature}
