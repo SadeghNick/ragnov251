@@ -94,6 +94,7 @@ export const Settings = ({
     showWebSourceOption = false,
     useSharePointSource = false,
     showSharePointSourceOption = false
+    selectedBlob,
 }: SettingsProps) => {
     const { t } = useTranslation();
     const selectedBlobId = useId("selectedBlob");
