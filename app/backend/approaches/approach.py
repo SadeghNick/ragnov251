@@ -283,7 +283,7 @@ class Approach(ABC):
         self.image_embeddings_client = image_embeddings_client
         self.global_blob_manager = global_blob_manager
         self.user_blob_manager = user_blob_manager
-
+    '''
     def build_filter(self, overrides: dict[str, Any]) -> Optional[str]:
         include_category = overrides.get("include_category")
         exclude_category = overrides.get("exclude_category")
@@ -293,6 +293,25 @@ class Approach(ABC):
         if exclude_category:
             filters.append("category ne '{}'".format(exclude_category.replace("'", "''")))
         return None if not filters else " and ".join(filters)
+    '''
+    def build_filter(self, overrides: dict[str, Any]) -> Optional[str]:
+        include_category = overrides.get("include_category")
+        exclude_category = overrides.get("exclude_category")
+        selected_blob = overrides.get("selected_blob")  # <-- NEW: name of the file / sourcefile
+        filters = []
+
+        if include_category:
+            filters.append("category eq '{}'".format(include_category.replace("'", "''")))
+
+        if exclude_category:
+            filters.append("category ne '{}'".format(exclude_category.replace("'", "''")))
+
+        if selected_blob:
+            # This must match the value in the `sourcefile` field in your index
+            filters.append("sourcefile eq '{}'".format(selected_blob.replace("'", "''")))
+
+        return None if not filters else " and ".join(filters)
+
 
     async def search(
         self,
