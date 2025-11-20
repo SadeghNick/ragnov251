@@ -270,8 +270,8 @@ const Chat = () => {
                         use_agentic_knowledgebase: useAgenticKnowledgeBase,
                         use_web_source: webSourceSupported ? webSourceEnabled : false,
                         use_sharepoint_source: sharePointSourceSupported ? sharePointSourceEnabled : false,
-                        ...(seed !== null ? { seed: seed } : {})
-                        ...(selectedBlob.length > 0 ? { selected_blob: selectedBlob } : {}),
+                        ...(seed !== null ? { seed: seed } : {}),
+                        ...(selectedBlob.length > 0 ? { selected_blob: selectedBlob } : {})
                     }
                 },
                 // AI Chat Protocol: Client must pass on any session state received from the server
