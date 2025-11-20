@@ -981,7 +981,7 @@ class Approach(ABC):
             # Include parameters that may not be supported for reasoning models
             params = {
                 "max_tokens": response_token_limit,
-                "temperature": temperature or overrides.get("temperature", 0.3),
+                "temperature": temperature or overrides.get("temperature", 0.1),
             }
         if should_stream:
             params["stream"] = True
