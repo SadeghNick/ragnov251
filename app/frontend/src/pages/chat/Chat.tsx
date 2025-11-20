@@ -67,7 +67,7 @@ const Chat = () => {
     const [answers, setAnswers] = useState<[user: string, response: ChatAppResponse][]>([]);
     const [streamedAnswers, setStreamedAnswers] = useState<[user: string, response: ChatAppResponse][]>([]);
     const [speechUrls, setSpeechUrls] = useState<(string | null)[]>([]);
-
+    const [selectedBlob, setSelectedBlob] = useState<string>("");
     const [showMultimodalOptions, setShowMultimodalOptions] = useState<boolean>(false);
     const [showSemanticRankerOption, setShowSemanticRankerOption] = useState<boolean>(false);
     const [showQueryRewritingOption, setShowQueryRewritingOption] = useState<boolean>(false);
@@ -271,6 +271,7 @@ const Chat = () => {
                         use_web_source: webSourceSupported ? webSourceEnabled : false,
                         use_sharepoint_source: sharePointSourceSupported ? sharePointSourceEnabled : false,
                         ...(seed !== null ? { seed: seed } : {})
+                        ...(selectedBlob.length > 0 ? { selected_blob: selectedBlob } : {}),
                     }
                 },
                 // AI Chat Protocol: Client must pass on any session state received from the server
@@ -444,6 +445,10 @@ const Chat = () => {
                     return;
                 }
                 setSharePointSourceEnabled(!!value);
+                break;
+
+            case "selectedBlob":
+                setSelectedBlob(value);
                 break;
         }
     };
@@ -621,6 +626,7 @@ const Chat = () => {
                 >
                     <Settings
                         promptTemplate={promptTemplate}
+                        selectedBlob={selectedBlob}
                         temperature={temperature}
                         retrieveCount={retrieveCount}
                         agenticReasoningEffort={agenticReasoningEffort}

@@ -50,6 +50,7 @@ export interface SettingsProps {
     showWebSourceOption?: boolean;
     useSharePointSource?: boolean;
     showSharePointSourceOption?: boolean;
+    selectedBlob: string;
 }
 
 export const Settings = ({
@@ -95,7 +96,8 @@ export const Settings = ({
     showSharePointSourceOption = false
 }: SettingsProps) => {
     const { t } = useTranslation();
-
+    const selectedBlobId = useId("selectedBlob");
+    const selectedBlobFieldId = useId("selectedBlobField");
     // Form field IDs
     const promptTemplateId = useId("promptTemplate");
     const promptTemplateFieldId = useId("promptTemplateField");
@@ -309,6 +311,15 @@ export const Settings = ({
                 onChange={(_ev, val) => onChange("excludeCategory", val || "")}
                 aria-labelledby={excludeCategoryId}
                 onRenderLabel={props => renderLabel(props, excludeCategoryId, excludeCategoryFieldId, t("helpTexts.excludeCategory"))}
+            />
+            <TextField
+                id={selectedBlobFieldId}
+                className={styles.settingsSeparator}
+                label="Source file"
+                value={selectedBlob}
+                onChange={(_ev, val) => onChange("selectedBlob", val || "")}
+                aria-labelledby={selectedBlobId}
+                onRenderLabel={props => renderLabel(props, selectedBlobId, selectedBlobFieldId, t("helpTexts.selectedBlob") ?? "")}
             />
             {showSemanticRankerOption && !useAgenticKnowledgeBase && (
                 <>
