@@ -294,6 +294,8 @@ class Approach(ABC):
             filters.append("category ne '{}'".format(exclude_category.replace("'", "''")))
         return None if not filters else " and ".join(filters)
     '''
+    # build_filter updated to support selected_blob filtering (single file)
+    '''
     def build_filter(self, overrides: dict[str, Any]) -> Optional[str]:
         include_category = overrides.get("include_category")
         exclude_category = overrides.get("exclude_category")
@@ -311,7 +313,41 @@ class Approach(ABC):
             filters.append("sourcefile eq '{}'".format(selected_blob.replace("'", "''")))
 
         return None if not filters else " and ".join(filters)
+      '''
+    # build_filter updated to support selected_blob filtering (multiple files)
+    def build_filter(self, overrides: dict[str, Any]) -> Optional[str]:
+        include_category = overrides.get("include_category")
+        exclude_category = overrides.get("exclude_category")
+        selected_blob = overrides.get("selected_blob")  # <-- NEW: name of the file / sourcefile
+        filters = []
 
+        if include_category:
+            filters.append("category eq '{}'".format(include_category.replace("'", "''")))
+
+        if exclude_category:
+            filters.append("category ne '{}'".format(exclude_category.replace("'", "''")))
+
+        if selected_blob:
+            # `selected_blob` can be a single filename or multiple names separated by commas.
+            # Split on commas, strip whitespace, and ignore empty entries.
+            raw_items = selected_blob.split(",")
+            file_names = [item.strip() for item in raw_items if item.strip()]
+
+            if len(file_names) == 1:
+                # Single file: keep the existing simple filter
+                fname = file_names[0].replace("'", "''")
+                filters.append(f"sourcefile eq '{fname}'")
+            else:
+                # Multiple files: build an OR expression
+                or_clauses = []
+                for name in file_names:
+                    escaped = name.replace("'", "''")
+                    or_clauses.append(f"sourcefile eq '{escaped}'")
+                # Surround with parentheses to ensure correct precedence with other filters
+                filters.append("(" + " or ".join(or_clauses) + ")")
+        return None if not filters else " and ".join(filters)
+
+    
 
     async def search(
         self,
