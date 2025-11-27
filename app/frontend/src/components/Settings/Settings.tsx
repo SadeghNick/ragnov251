@@ -9,6 +9,12 @@ import styles from "./Settings.module.css";
 // Add type for onRenderLabel
 type RenderLabelType = ITextFieldProps | IDropdownProps | ICheckboxProps;
 
+import fileNames from "../../FileNames/fileNames";
+const fileOptions: IDropdownOption[] = fileNames.map(name => ({
+    key: name,
+    text: name
+}));
+
 export interface SettingsProps {
     promptTemplate: string;
     temperature: number;
@@ -313,15 +319,46 @@ export const Settings = ({
                 aria-labelledby={excludeCategoryId}
                 onRenderLabel={props => renderLabel(props, excludeCategoryId, excludeCategoryFieldId, t("helpTexts.excludeCategory"))}
             />
-            <TextField
+            <Dropdown
                 id={selectedBlobFieldId}
                 className={styles.settingsSeparator}
-                label="Source file"
-                value={selectedBlob}
-                onChange={(_ev, val) => onChange("selectedBlob", val || "")}
+                label="Source files"
+                placeholder="Select one or more files"
+                // allow multiple selection
+                multiSelect
+                // split the incoming string into an array of keys
+                selectedKeys={
+                    selectedBlob
+                        ? selectedBlob
+                              .split(",")
+                              .map((s: string) => s.trim())
+                              .filter(Boolean)
+                        : []
+                }
+                options={fileOptions}
+                onChange={(_ev, option) => {
+                    if (!option) return;
+                    // get current selection
+                    const currentKeys = selectedBlob
+                        ? selectedBlob
+                              .split(",")
+                              .map(s => s.trim())
+                              .filter(Boolean)
+                        : [];
+                    let newKeys: string[];
+                    if (option.selected) {
+                        // add the newly selected option
+                        newKeys = [...currentKeys, option.key as string];
+                    } else {
+                        // remove the unselected option
+                        newKeys = currentKeys.filter(k => k !== option.key);
+                    }
+                    // join them back into a comma‑separated string
+                    onChange("selectedBlob", newKeys.join(", "));
+                }}
                 aria-labelledby={selectedBlobId}
-                onRenderLabel={props => renderLabel(props, selectedBlobId, selectedBlobFieldId, t("helpTexts.selectedBlob") ?? "")}
             />
+
             {showSemanticRankerOption && !useAgenticKnowledgeBase && (
                 <>
                     <Checkbox
