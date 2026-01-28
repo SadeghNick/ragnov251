@@ -134,6 +134,9 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
+# ty
+.ty_cache/
+
 # Pyre type checker
 .pyre/
 
@@ -149,6 +152,7 @@ node_modules
 static/
 
 app/functions/*/prepdocslib/
+app/functions/*/requirements.txt
 
 data/**/*.md5
 

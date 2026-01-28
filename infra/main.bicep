@@ -132,6 +132,12 @@ param speechServiceVoice string = ''
 param useMultimodal bool = false
 param useEval bool = false
 param useCloudIngestion bool = false
+param useCloudIngestionAcls bool = false
+@description('Use an existing ADLS Gen2 storage account instead of provisioning a new one')
+param useExistingAdlsStorage bool = false
+// Must be specified when useExistingAdlsStorage is true. Bicep assert is experimental so we can't validate at compile-time yet.
+param adlsStorageAccountName string = ''
+param adlsStorageResourceGroupName string = ''
 
 @allowed(['free', 'provisioned', 'serverless'])
 param cosmosDbSkuName string // Set in main.parameters.json
@@ -231,7 +237,7 @@ var embedding = {
   deploymentName: !empty(embeddingDeploymentName) ? embeddingDeploymentName : 'text-embedding-3-large'
   deploymentVersion: !empty(embeddingDeploymentVersion) ? embeddingDeploymentVersion : (embeddingModelName == 'text-embedding-ada-002' ? '2' : '1')
   deploymentSkuName: !empty(embeddingDeploymentSkuName) ? embeddingDeploymentSkuName : (embeddingModelName == 'text-embedding-ada-002' ? 'Standard' : 'GlobalStandard')
-  deploymentCapacity: embeddingDeploymentCapacity != 0 ? embeddingDeploymentCapacity : 30
+  deploymentCapacity: embeddingDeploymentCapacity != 0 ? embeddingDeploymentCapacity : 200
   dimensions: embeddingDimensions != 0 ? embeddingDimensions : 3072
 }
 
@@ -377,7 +383,7 @@ param containerRegistryName string = deploymentTarget == 'containerapps'
 // For more information please see https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
 var msftAllowedOrigins = [ 'https://portal.azure.com', 'https://ms.portal.azure.com' ]
 var loginEndpoint = environment().authentication.loginEndpoint
-var loginEndpointFixed = lastIndexOf(loginEndpoint, '/') == length(loginEndpoint) - 1 ? substring(loginEndpoint, 0, length(loginEndpoint) - 1) : loginEndpoint
+var loginEndpointFixed = lastIndexOf(loginEndpoint, '/') == length(loginEndpoint) - 1 ? substring(loginEndpoint, 0, max(length(loginEndpoint) - 1, 0)) : loginEndpoint
 var allMsftAllowedOrigins = !(empty(clientAppId)) ? union(msftAllowedOrigins, [ loginEndpointFixed ]) : msftAllowedOrigins
 // Combine custom origins with Microsoft origins, remove any empty origin strings and remove any duplicate origins
 var allowedOrigins = reduce(filter(union(split(allowedOrigin, ';'), allMsftAllowedOrigins), o => length(trim(o)) > 0), [], (cur, next) => union(cur, [next]))
@@ -421,6 +427,11 @@ resource cosmosDbResourceGroup 'Microsoft.Resources/resourceGroups@2024-11-01' e
   name: !empty(cosmodDbResourceGroupName) ? cosmodDbResourceGroupName : resourceGroup.name
 }
 
+// ADLS resource group - defaults to main resource group if not specified
+resource adlsStorageResourceGroup 'Microsoft.Resources/resourceGroups@2024-11-01' existing = {
+  name: !empty(adlsStorageResourceGroupName) ? adlsStorageResourceGroupName : resourceGroup.name
+}
+
 // Monitor application with Azure Monitor
 module monitoring 'core/monitor/monitoring.bicep' = if (useApplicationInsights) {
   name: 'monitoring'
@@ -446,7 +457,7 @@ module applicationInsightsDashboard 'backend-dashboard.bicep' = if (useApplicati
       ? applicationInsightsDashboardName
       : '${abbrs.portalDashboards}${resourceToken}'
     location: location
-    applicationInsightsName: useApplicationInsights ? monitoring.outputs.applicationInsightsName : ''
+    applicationInsightsName: useApplicationInsights ? monitoring!.outputs.applicationInsightsName : ''
   }
 }
 
@@ -466,23 +477,34 @@ module appServicePlan 'core/host/appserviceplan.bicep' = if (deploymentTarget ==
   }
 }
 
+// Determine which ADLS storage account name to use (existing or provisioned)
+var adlsStorageAccountNameResolved = useExistingAdlsStorage ? existingAdlsStorage.name : (useCloudIngestionAcls ? adlsStorage!.outputs.name : '')
+
+// For cloud ingestion with ACLs, use the ADLS Gen2 storage account; otherwise use the standard storage account
+var cloudIngestionStorageAccount = useCloudIngestionAcls ? adlsStorageAccountNameResolved : storage.outputs.name
+
 var appEnvVariables = {
   AZURE_STORAGE_ACCOUNT: storage.outputs.name
   AZURE_STORAGE_CONTAINER: storageContainerName
+  AZURE_STORAGE_RESOURCE_GROUP: storageResourceGroup.name
+  // Cloud ingestion uses ADLS Gen2 storage when ACLs are enabled for manual ACL extraction
+  AZURE_CLOUD_INGESTION_STORAGE_ACCOUNT: cloudIngestionStorageAccount
+  USE_CLOUD_INGESTION_ACLS: string(useCloudIngestionAcls)
+  AZURE_SUBSCRIPTION_ID: subscription().subscriptionId
   AZURE_SEARCH_INDEX: searchIndexName
   AZURE_SEARCH_KNOWLEDGEBASE_NAME: knowledgeBaseName
   AZURE_SEARCH_SERVICE: searchService.outputs.name
   AZURE_SEARCH_SEMANTIC_RANKER: actualSearchServiceSemanticRankerLevel
   AZURE_SEARCH_QUERY_REWRITING: searchServiceQueryRewriting
-  AZURE_VISION_ENDPOINT: useMultimodal ? vision.outputs.endpoint : ''
+  AZURE_VISION_ENDPOINT: useMultimodal ? vision!.outputs.endpoint : ''
   AZURE_SEARCH_QUERY_LANGUAGE: searchQueryLanguage
   AZURE_SEARCH_QUERY_SPELLER: searchQuerySpeller
   AZURE_SEARCH_FIELD_NAME_EMBEDDING: searchFieldNameEmbedding
   APPLICATIONINSIGHTS_CONNECTION_STRING: useApplicationInsights
-    ? monitoring.outputs.applicationInsightsConnectionString
+    ? monitoring!.outputs.applicationInsightsConnectionString
     : ''
-  AZURE_SPEECH_SERVICE_ID: useSpeechOutputAzure ? speech.outputs.resourceId : ''
-  AZURE_SPEECH_SERVICE_LOCATION: useSpeechOutputAzure ? speech.outputs.location : ''
+  AZURE_SPEECH_SERVICE_ID: useSpeechOutputAzure ? speech!.outputs.resourceId : ''
+  AZURE_SPEECH_SERVICE_LOCATION: useSpeechOutputAzure ? speech!.outputs.location : ''
   AZURE_SPEECH_SERVICE_VOICE: useSpeechOutputAzure ? speechServiceVoice : ''
   ENABLE_LANGUAGE_PICKER: enableLanguagePicker
   USE_SPEECH_INPUT_BROWSER: useSpeechInputBrowser
@@ -492,7 +514,7 @@ var appEnvVariables = {
   // Chat history settings
   USE_CHAT_HISTORY_BROWSER: useChatHistoryBrowser
   USE_CHAT_HISTORY_COSMOS: useChatHistoryCosmos
-  AZURE_COSMOSDB_ACCOUNT: (useAuthentication && useChatHistoryCosmos) ? cosmosDb.outputs.name : ''
+  AZURE_COSMOSDB_ACCOUNT: (useAuthentication && useChatHistoryCosmos) ? cosmosDb!.outputs.name : ''
   AZURE_CHAT_HISTORY_DATABASE: chatHistoryDatabaseName
   AZURE_CHAT_HISTORY_CONTAINER: chatHistoryContainerName
   AZURE_CHAT_HISTORY_VERSION: chatHistoryVersion
@@ -504,7 +526,7 @@ var appEnvVariables = {
   AZURE_OPENAI_REASONING_EFFORT: defaultReasoningEffort
   AGENTIC_KNOWLEDGEBASE_REASONING_EFFORT: defaultRetrievalReasoningEffort
   // Specific to Azure OpenAI
-  AZURE_OPENAI_SERVICE: isAzureOpenAiHost && deployAzureOpenAi ? openAi.outputs.name : ''
+  AZURE_OPENAI_SERVICE: isAzureOpenAiHost && deployAzureOpenAi ? openAi!.outputs.name : ''
   AZURE_OPENAI_CHATGPT_DEPLOYMENT: chatGpt.deploymentName
   AZURE_OPENAI_EMB_DEPLOYMENT: embedding.deploymentName
   AZURE_OPENAI_knowledgeBase_MODEL: knowledgeBase.modelName
@@ -529,14 +551,14 @@ var appEnvVariables = {
   USE_VECTORS: useVectors
   USE_MULTIMODAL: useMultimodal
   USE_USER_UPLOAD: useUserUpload
-  AZURE_USERSTORAGE_ACCOUNT: useUserUpload ? userStorage.outputs.name : ''
+  AZURE_USERSTORAGE_ACCOUNT: useUserUpload ? userStorage!.outputs.name : ''
   AZURE_USERSTORAGE_CONTAINER: useUserUpload ? userStorageContainerName : ''
   AZURE_IMAGESTORAGE_CONTAINER: useMultimodal ? imageStorageContainerName : ''
   AZURE_DOCUMENTINTELLIGENCE_SERVICE: documentIntelligence.outputs.name
   USE_LOCAL_PDF_PARSER: useLocalPdfParser
   USE_LOCAL_HTML_PARSER: useLocalHtmlParser
   USE_MEDIA_DESCRIBER_AZURE_CU: useMediaDescriberAzureCU
-  AZURE_CONTENTUNDERSTANDING_ENDPOINT: useMediaDescriberAzureCU ? contentUnderstanding.outputs.endpoint : ''
+  AZURE_CONTENTUNDERSTANDING_ENDPOINT: useMediaDescriberAzureCU ? contentUnderstanding!.outputs.endpoint : ''
   RUNNING_IN_PRODUCTION: 'true'
   // RAG Configuration
   RAG_SEARCH_TEXT_EMBEDDINGS: ragSearchTextEmbeddings
@@ -556,13 +578,13 @@ module backend 'core/host/appservice.bicep' = if (deploymentTarget == 'appservic
     location: location
     tags: union(tags, { 'azd-service-name': 'backend' })
     // Need to check deploymentTarget again due to https://github.com/Azure/bicep/issues/3990
-    appServicePlanId: deploymentTarget == 'appservice' ? appServicePlan.outputs.id : ''
+    appServicePlanId: deploymentTarget == 'appservice' ? appServicePlan!.outputs.id : ''
     runtimeName: 'python'
     runtimeVersion: '3.11'
     appCommandLine: 'python3 -m gunicorn main:app'
     scmDoBuildDuringDeployment: true
     managedIdentity: true
-    virtualNetworkSubnetId: usePrivateEndpoint ? isolation.outputs.appSubnetId : ''
+    virtualNetworkSubnetId: usePrivateEndpoint ? isolation!.outputs.appSubnetId : ''
     publicNetworkAccess: publicNetworkAccess
     allowedOrigins: allowedOrigins
     clientAppId: clientAppId
@@ -601,8 +623,8 @@ module containerApps 'core/host/container-apps.bicep' = if (deploymentTarget == 
     location: location
     containerAppsEnvironmentName: acaManagedEnvironmentName
     containerRegistryName: '${containerRegistryName}${resourceToken}'
-    logAnalyticsWorkspaceName: useApplicationInsights ? monitoring.outputs.logAnalyticsWorkspaceName : ''
-    subnetResourceId: usePrivateEndpoint ? isolation.outputs.appSubnetId : ''
+    logAnalyticsWorkspaceName: useApplicationInsights ? monitoring!.outputs.logAnalyticsWorkspaceName : ''
+    subnetResourceId: usePrivateEndpoint ? isolation!.outputs.appSubnetId : ''
     usePrivateIngress: usePrivateEndpoint
     workloadProfile: azureContainerAppsWorkloadProfile
   }
@@ -612,17 +634,13 @@ module containerApps 'core/host/container-apps.bicep' = if (deploymentTarget == 
 module acaBackend 'core/host/container-app-upsert.bicep' = if (deploymentTarget == 'containerapps') {
   name: 'aca-web'
   scope: resourceGroup
-  dependsOn: [
-    containerApps
-    acaIdentity
-  ]
   params: {
     name: !empty(backendServiceName) ? backendServiceName : '${abbrs.webSitesContainerApps}backend-${resourceToken}'
     location: location
     identityName: (deploymentTarget == 'containerapps') ? acaIdentityName : ''
     exists: webAppExists
-    containerRegistryName: (deploymentTarget == 'containerapps') ? containerApps.outputs.registryName : ''
-    containerAppsEnvironmentName: (deploymentTarget == 'containerapps') ? containerApps.outputs.environmentName : ''
+    containerRegistryName: (deploymentTarget == 'containerapps') ? containerApps!.outputs.registryName : ''
+    containerAppsEnvironmentName: (deploymentTarget == 'containerapps') ? containerApps!.outputs.environmentName : ''
     tags: union(tags, { 'azd-service-name': 'backend' })
     targetPort: 8000
     containerCpuCoreCount: '1.0'
@@ -631,7 +649,7 @@ module acaBackend 'core/host/container-app-upsert.bicep' = if (deploymentTarget 
     allowedOrigins: allowedOrigins
     env: union(appEnvVariables, {
       // For using managed identity to access Azure resources. See https://github.com/microsoft/azure-container-apps/issues/442
-      AZURE_CLIENT_ID: (deploymentTarget == 'containerapps') ? acaIdentity.outputs.clientId : ''
+      AZURE_CLIENT_ID: (deploymentTarget == 'containerapps') ? acaIdentity!.outputs.clientId : ''
     })
     secrets: useAuthentication ? {
       azureclientappsecret: clientAppSecret
@@ -654,14 +672,14 @@ module acaAuth 'core/host/container-apps-auth.bicep' = if (deploymentTarget == '
   name: 'aca-auth'
   scope: resourceGroup
   params: {
-    name: acaBackend.outputs.name
+    name: acaBackend!.outputs.name
     clientAppId: clientAppId
     serverAppId: serverAppId
     clientSecretSettingName: !empty(clientAppSecret) ? 'azureclientappsecret' : ''
     authenticationIssuerUri: authenticationIssuerUri
     enableUnauthenticatedAccess: enableUnauthenticatedAccess
     blobContainerUri: 'https://${storageAccountName}.blob.${environment().suffixes.storage}/${tokenStorageContainerName}'
-    appIdentityResourceId: (deploymentTarget == 'appservice') ? '' : acaBackend.outputs.identityResourceId
+    appIdentityResourceId: (deploymentTarget == 'appservice') ? '' : acaBackend!.outputs.identityResourceId
   }
 }
 
@@ -881,7 +899,7 @@ module searchDiagnostics 'core/search/search-diagnostics.bicep' = if (useApplica
   scope: searchServiceResourceGroup
   params: {
     searchServiceName: searchService.outputs.name
-    workspaceId: useApplicationInsights ? monitoring.outputs.logAnalyticsWorkspaceId : ''
+    workspaceId: useApplicationInsights ? monitoring!.outputs.logAnalyticsWorkspaceId : ''
   }
 }
 
@@ -940,6 +958,42 @@ module userStorage 'core/storage/storage-account.bicep' = if (useUserUpload) {
     containers: [
       {
         name: userStorageContainerName
+        publicAccess: 'None'
+      }
+    ]
+  }
+}
+
+// Reference existing ADLS Gen2 storage account when bringing your own
+resource existingAdlsStorage 'Microsoft.Storage/storageAccounts@2023-05-01' existing = if (useExistingAdlsStorage && !empty(adlsStorageAccountName)) {
+  name: adlsStorageAccountName
+  scope: adlsStorageResourceGroup
+}
+
+// ADLS Gen2 storage account for cloud ingestion with ACL support
+// Only provision if using cloud ingestion ACLs AND not using an existing ADLS account
+module adlsStorage 'core/storage/storage-account.bicep' = if (useCloudIngestionAcls && !useExistingAdlsStorage) {
+  name: 'adls-storage'
+  scope: storageResourceGroup
+  params: {
+    name: 'adls${abbrs.storageStorageAccounts}${resourceToken}'
+    location: storageResourceGroupLocation
+    tags: tags
+    publicNetworkAccess: publicNetworkAccess
+    bypass: bypass
+    allowBlobPublicAccess: false
+    allowSharedKeyAccess: false
+    isHnsEnabled: true
+    sku: {
+      name: storageSkuName
+    }
+    deleteRetentionPolicy: {
+      enabled: true
+      days: 2
+    }
+    containers: [
+      {
+        name: storageContainerName
         publicAccess: 'None'
       }
     ]
@@ -1019,7 +1073,7 @@ module ai 'core/ai/ai-environment.bicep' = if (useAiProject) {
     hubName: 'aihub-${resourceToken}'
     projectName: 'aiproj-${resourceToken}'
     storageAccountId: storage.outputs.id
-    applicationInsightsId: !useApplicationInsights ? '' : monitoring.outputs.applicationInsightsId
+    applicationInsightsId: !useApplicationInsights ? '' : monitoring!.outputs.applicationInsightsId
   }
 }
 
@@ -1053,7 +1107,7 @@ module speechRoleUser 'core/security/role.bicep' = {
   name: 'speech-role-user'
   params: {
     principalId: principalId
-    roleDefinitionId: 'f2dc8367-1007-4938-bd23-fe263f013447'
+    roleDefinitionId: 'f2dc8367-1007-4938-bd23-fe263f013447' // Cognitive Services Speech User
     principalType: principalType
   }
 }
@@ -1093,7 +1147,7 @@ module searchRoleUser 'core/security/role.bicep' = {
   name: 'search-role-user'
   params: {
     principalId: principalId
-    roleDefinitionId: '1407120a-92aa-4202-b7e9-c0e197c71c8f'
+    roleDefinitionId: '1407120a-92aa-4202-b7e9-c0e197c71c8f' // Search Index Data Reader
     principalType: principalType
   }
 }
@@ -1103,7 +1157,7 @@ module searchContribRoleUser 'core/security/role.bicep' = {
   name: 'search-contrib-role-user'
   params: {
     principalId: principalId
-    roleDefinitionId: '8ebe5a00-799e-43f5-93ac-243d3dce84a7'
+    roleDefinitionId: '8ebe5a00-799e-43f5-93ac-243d3dce84a7' // Search Index Data Contributor
     principalType: principalType
   }
 }
@@ -1113,7 +1167,7 @@ module searchSvcContribRoleUser 'core/security/role.bicep' = {
   name: 'search-svccontrib-role-user'
   params: {
     principalId: principalId
-    roleDefinitionId: '7ca78c08-252a-4471-8644-bb5ff32d4ba0'
+    roleDefinitionId: '7ca78c08-252a-4471-8644-bb5ff32d4ba0' // Search Service Contributor
     principalType: principalType
   }
 }
@@ -1134,11 +1188,11 @@ module cosmosDbDataContribRoleUser 'core/security/documentdb-sql-role.bicep' = i
   scope: cosmosDbResourceGroup
   name: 'cosmosdb-data-contrib-role-user'
   params: {
-    databaseAccountName: (useAuthentication && useChatHistoryCosmos) ? cosmosDb.outputs.name : ''
+    databaseAccountName: (useAuthentication && useChatHistoryCosmos) ? cosmosDb!.outputs.name : ''
     principalId: principalId
     // Cosmos DB Built-in Data Contributor role
     roleDefinitionId: (useAuthentication && useChatHistoryCosmos)
-      ? '/${subscription().id}/resourceGroups/${cosmosDb.outputs.resourceGroupName}/providers/Microsoft.DocumentDB/databaseAccounts/${cosmosDb.outputs.name}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002'
+      ? '/${subscription().id}/resourceGroups/${cosmosDb!.outputs.resourceGroupName}/providers/Microsoft.DocumentDB/databaseAccounts/${cosmosDb!.outputs.name}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002'
       : ''
   }
 }
@@ -1149,14 +1203,14 @@ module openAiRoleBackend 'core/security/role.bicep' = if (isAzureOpenAiHost && d
   name: 'openai-role-backend'
   params: {
     principalId: (deploymentTarget == 'appservice')
-      ? backend.outputs.identityPrincipalId
-      : acaBackend.outputs.identityPrincipalId
+      ? backend!.outputs.identityPrincipalId
+      : acaBackend!.outputs.identityPrincipalId
     roleDefinitionId: '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
     principalType: 'ServicePrincipal'
   }
 }
 
-module openAiRoleSearchService 'core/security/role.bicep' = if (isAzureOpenAiHost && deployAzureOpenAi) {
+module openAiRoleSearchService 'core/security/role.bicep' = if (isAzureOpenAiHost && deployAzureOpenAi && searchServiceSkuName != 'free') {
   scope: openAiResourceGroup
   name: 'openai-role-searchservice'
   params: {
@@ -1166,7 +1220,7 @@ module openAiRoleSearchService 'core/security/role.bicep' = if (isAzureOpenAiHos
   }
 }
 
-module visionRoleSearchService 'core/security/role.bicep' = if (useMultimodal) {
+module visionRoleSearchService 'core/security/role.bicep' = if (useMultimodal && searchServiceSkuName != 'free') {
   scope: visionResourceGroup
   name: 'vision-role-searchservice'
   params: {
@@ -1181,8 +1235,8 @@ module storageRoleBackend 'core/security/role.bicep' = {
   name: 'storage-role-backend'
   params: {
     principalId: (deploymentTarget == 'appservice')
-      ? backend.outputs.identityPrincipalId
-      : acaBackend.outputs.identityPrincipalId
+      ? backend!.outputs.identityPrincipalId
+      : acaBackend!.outputs.identityPrincipalId
     roleDefinitionId: '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1' // Storage Blob Data Reader
     principalType: 'ServicePrincipal'
   }
@@ -1193,15 +1247,15 @@ module storageOwnerRoleBackend 'core/security/role.bicep' = if (useUserUpload) {
   name: 'storage-owner-role-backend'
   params: {
     principalId: (deploymentTarget == 'appservice')
-      ? backend.outputs.identityPrincipalId
-      : acaBackend.outputs.identityPrincipalId
+      ? backend!.outputs.identityPrincipalId
+      : acaBackend!.outputs.identityPrincipalId
     roleDefinitionId: 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b' // Storage Blob Data Owner
     principalType: 'ServicePrincipal'
   }
 }
 
 // Search service needs blob read access for both integrated vectorization and cloud ingestion indexer data source
-module storageRoleSearchService 'core/security/role.bicep' = if (useIntegratedVectorization || useCloudIngestion) {
+module storageRoleSearchService 'core/security/role.bicep' = if ((useIntegratedVectorization || useCloudIngestion) && searchServiceSkuName != 'free') {
   scope: storageResourceGroup
   name: 'storage-role-searchservice'
   params: {
@@ -1211,7 +1265,7 @@ module storageRoleSearchService 'core/security/role.bicep' = if (useIntegratedVe
   }
 }
 
-module storageRoleContributorSearchService 'core/security/role.bicep' = if (useIntegratedVectorization && useMultimodal) {
+module storageRoleContributorSearchService 'core/security/role.bicep' = if ((useIntegratedVectorization && useMultimodal) && searchServiceSkuName != 'free') {
   scope: storageResourceGroup
   name: 'storage-role-contributor-searchservice'
   params: {
@@ -1221,12 +1275,53 @@ module storageRoleContributorSearchService 'core/security/role.bicep' = if (useI
   }
 }
 
+// ADLS Gen2 storage role assignments for cloud ingestion with ACLs
+// These are scoped to the ADLS storage account itself, so they work for both
+// provisioned and bring-your-own (BYO) ADLS storage accounts
+module adlsStorageRoleSearchService 'core/security/storage-role.bicep' = if (useCloudIngestionAcls && searchServiceSkuName != 'free') {
+  scope: adlsStorageResourceGroup
+  name: 'adls-storage-role-searchservice'
+  params: {
+    storageAccountName: adlsStorageAccountNameResolved
+    principalId: searchService.outputs.systemAssignedPrincipalId
+    roleDefinitionId: '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1' // Storage Blob Data Reader
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Storage Blob Data Owner on ADLS storage for user to manage ACLs
+module adlsStorageOwnerRoleUser 'core/security/storage-role.bicep' = if (useCloudIngestionAcls) {
+  scope: adlsStorageResourceGroup
+  name: 'adls-storage-owner-role-user'
+  params: {
+    storageAccountName: adlsStorageAccountNameResolved
+    principalId: principalId
+    roleDefinitionId: 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b' // Storage Blob Data Owner
+    principalType: principalType
+  }
+}
+
+// Storage Blob Data Reader on ADLS storage for Azure Functions to read during cloud ingestion
+// Note: This module requires useCloudIngestion=true because it references functions!.outputs.principalId.
+// If useCloudIngestionAcls=true but useCloudIngestion=false, deployment will fail.
+// Documentation states USE_CLOUD_INGESTION_ACLS requires USE_CLOUD_INGESTION to be true.
+module adlsStorageRoleFunctions 'core/security/storage-role.bicep' = if (useCloudIngestionAcls && useCloudIngestion) {
+  scope: adlsStorageResourceGroup
+  name: 'adls-storage-role-functions'
+  params: {
+    storageAccountName: adlsStorageAccountNameResolved
+    principalId: functions!.outputs.principalId
+    roleDefinitionId: '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1' // Storage Blob Data Reader
+    principalType: 'ServicePrincipal'
+  }
+}
+
 // Necessary for the Container Apps backend to store authentication tokens in the blob storage container
 module storageRoleContributorBackend 'core/security/role.bicep' = if (deploymentTarget == 'containerapps' && !empty(clientAppId)) {
   scope: storageResourceGroup
   name: 'storage-role-contributor-aca-backend'
   params: {
-    principalId: acaBackend.outputs.identityPrincipalId
+    principalId: acaBackend!.outputs.identityPrincipalId
     roleDefinitionId: 'ba92f5b4-2d11-453d-a403-e96b0029c9fe' // Storage Blob Data Contributor
     principalType: 'ServicePrincipal'
   }
@@ -1239,8 +1334,8 @@ module searchRoleBackend 'core/security/role.bicep' = {
   name: 'search-role-backend'
   params: {
     principalId: (deploymentTarget == 'appservice')
-      ? backend.outputs.identityPrincipalId
-      : acaBackend.outputs.identityPrincipalId
+      ? backend!.outputs.identityPrincipalId
+      : acaBackend!.outputs.identityPrincipalId
     roleDefinitionId: '1407120a-92aa-4202-b7e9-c0e197c71c8f'
     principalType: 'ServicePrincipal'
   }
@@ -1251,9 +1346,9 @@ module speechRoleBackend 'core/security/role.bicep' = {
   name: 'speech-role-backend'
   params: {
     principalId: (deploymentTarget == 'appservice')
-      ? backend.outputs.identityPrincipalId
-      : acaBackend.outputs.identityPrincipalId
-    roleDefinitionId: 'f2dc8367-1007-4938-bd23-fe263f013447'
+      ? backend!.outputs.identityPrincipalId
+      : acaBackend!.outputs.identityPrincipalId
+    roleDefinitionId: 'f2dc8367-1007-4938-bd23-fe263f013447' // Cognitive Services Speech User
     principalType: 'ServicePrincipal'
   }
 }
@@ -1264,13 +1359,13 @@ module cosmosDbRoleBackend 'core/security/documentdb-sql-role.bicep' = if (useAu
   scope: cosmosDbResourceGroup
   name: 'cosmosdb-role-backend'
   params: {
-    databaseAccountName: (useAuthentication && useChatHistoryCosmos) ? cosmosDb.outputs.name : ''
+    databaseAccountName: (useAuthentication && useChatHistoryCosmos) ? cosmosDb!.outputs.name : ''
     principalId: (deploymentTarget == 'appservice')
-      ? backend.outputs.identityPrincipalId
-      : acaBackend.outputs.identityPrincipalId
+      ? backend!.outputs.identityPrincipalId
+      : acaBackend!.outputs.identityPrincipalId
     // Cosmos DB Built-in Data Contributor role
     roleDefinitionId: (useAuthentication && useChatHistoryCosmos)
-      ? '/${subscription().id}/resourceGroups/${cosmosDb.outputs.resourceGroupName}/providers/Microsoft.DocumentDB/databaseAccounts/${cosmosDb.outputs.name}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002'
+      ? '/${subscription().id}/resourceGroups/${cosmosDb!.outputs.resourceGroupName}/providers/Microsoft.DocumentDB/databaseAccounts/${cosmosDb!.outputs.name}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002'
       : ''
   }
 }
@@ -1296,7 +1391,7 @@ var openAiPrivateEndpointConnection = (usePrivateEndpoint && isAzureOpenAiHost &
       {
         groupId: 'account'
         dnsZoneName: 'privatelink.openai.azure.com'
-        resourceIds: [openAi.outputs.resourceId]
+        resourceIds: [openAi!.outputs.resourceId]
       }
     ]
   : []
@@ -1310,8 +1405,8 @@ var cognitiveServicesPrivateEndpointConnection = (usePrivateEndpoint && (!useLoc
         // Azure OpenAI uses its own privatelink.openai.azure.com zone and already has a separate private endpoint above.
         resourceIds: concat(
           !useLocalPdfParser ? [documentIntelligence.outputs.resourceId] : [],
-          useMultimodal ? [vision.outputs.resourceId] : [],
-          useMediaDescriberAzureCU ? [contentUnderstanding.outputs.resourceId] : []
+          useMultimodal ? [vision!.outputs.resourceId] : [],
+          useMediaDescriberAzureCU ? [contentUnderstanding!.outputs.resourceId] : []
         )
       }
     ]
@@ -1322,7 +1417,7 @@ var containerAppsPrivateEndpointConnection = (usePrivateEndpoint && deploymentTa
       {
         groupId: 'managedEnvironments'
         dnsZoneName: 'privatelink.${location}.azurecontainerapps.io'
-        resourceIds: [containerApps.outputs.environmentId]
+        resourceIds: [containerApps!.outputs.environmentId]
       }
     ]
   : []
@@ -1332,7 +1427,7 @@ var appServicePrivateEndpointConnection = (usePrivateEndpoint && deploymentTarge
       {
         groupId: 'sites'
         dnsZoneName: 'privatelink.azurewebsites.net'
-        resourceIds: [backend.outputs.id]
+        resourceIds: [backend!.outputs.id]
       }
     ]
   : []
@@ -1341,7 +1436,7 @@ var otherPrivateEndpointConnections = (usePrivateEndpoint)
       {
         groupId: 'blob'
         dnsZoneName: 'privatelink.blob.${environmentData.suffixes.storage}'
-        resourceIds: concat([storage.outputs.id], useUserUpload ? [userStorage.outputs.id] : [])
+        resourceIds: concat([storage.outputs.id], useUserUpload ? [userStorage!.outputs.id] : [])
       }
       {
         groupId: 'searchService'
@@ -1351,7 +1446,7 @@ var otherPrivateEndpointConnections = (usePrivateEndpoint)
       {
         groupId: 'sql'
         dnsZoneName: 'privatelink.documents.azure.com'
-        resourceIds: (useAuthentication && useChatHistoryCosmos) ? [cosmosDb.outputs.resourceId] : []
+        resourceIds: (useAuthentication && useChatHistoryCosmos) ? [cosmosDb!.outputs.resourceId] : []
       }
     ]
   : []
@@ -1366,10 +1461,10 @@ module privateEndpoints 'private-endpoints.bicep' = if (usePrivateEndpoint) {
     tags: tags
     resourceToken: resourceToken
     privateEndpointConnections: privateEndpointConnections
-    applicationInsightsId: useApplicationInsights ? monitoring.outputs.applicationInsightsId : ''
-    logAnalyticsWorkspaceId: useApplicationInsights ? monitoring.outputs.logAnalyticsWorkspaceId : ''
-    vnetName: isolation.outputs.vnetName
-    vnetPeSubnetId: isolation.outputs.backendSubnetId
+    applicationInsightsId: useApplicationInsights ? monitoring!.outputs.applicationInsightsId : ''
+    logAnalyticsWorkspaceId: useApplicationInsights ? monitoring!.outputs.logAnalyticsWorkspaceId : ''
+    vnetName: isolation!.outputs.vnetName
+    vnetPeSubnetId: isolation!.outputs.backendSubnetId
   }
 }
 
@@ -1380,8 +1475,8 @@ module searchReaderRoleBackend 'core/security/role.bicep' = if (useAuthenticatio
   name: 'search-reader-role-backend'
   params: {
     principalId: (deploymentTarget == 'appservice')
-      ? backend.outputs.identityPrincipalId
-      : acaBackend.outputs.identityPrincipalId
+      ? backend!.outputs.identityPrincipalId
+      : acaBackend!.outputs.identityPrincipalId
     roleDefinitionId: 'acdd72a7-3385-48ef-bd42-f606fba81ae7'
     principalType: 'ServicePrincipal'
   }
@@ -1393,8 +1488,8 @@ module searchContribRoleBackend 'core/security/role.bicep' = if (useUserUpload) 
   name: 'search-contrib-role-backend'
   params: {
     principalId: (deploymentTarget == 'appservice')
-      ? backend.outputs.identityPrincipalId
-      : acaBackend.outputs.identityPrincipalId
+      ? backend!.outputs.identityPrincipalId
+      : acaBackend!.outputs.identityPrincipalId
     roleDefinitionId: '8ebe5a00-799e-43f5-93ac-243d3dce84a7'
     principalType: 'ServicePrincipal'
   }
@@ -1406,8 +1501,8 @@ module visionRoleBackend 'core/security/role.bicep' = if (useMultimodal) {
   name: 'vision-role-backend'
   params: {
     principalId: (deploymentTarget == 'appservice')
-      ? backend.outputs.identityPrincipalId
-      : acaBackend.outputs.identityPrincipalId
+      ? backend!.outputs.identityPrincipalId
+      : acaBackend!.outputs.identityPrincipalId
     roleDefinitionId: 'a97b65f3-24c7-4388-baec-2e87135dc908'
     principalType: 'ServicePrincipal'
   }
@@ -1419,8 +1514,8 @@ module documentIntelligenceRoleBackend 'core/security/role.bicep' = if (useUserU
   name: 'documentintelligence-role-backend'
   params: {
     principalId: (deploymentTarget == 'appservice')
-      ? backend.outputs.identityPrincipalId
-      : acaBackend.outputs.identityPrincipalId
+      ? backend!.outputs.identityPrincipalId
+      : acaBackend!.outputs.identityPrincipalId
     roleDefinitionId: 'a97b65f3-24c7-4388-baec-2e87135dc908'
     principalType: 'ServicePrincipal'
   }
@@ -1438,8 +1533,8 @@ output AZURE_OPENAI_EMB_DIMENSIONS int = embedding.dimensions
 output AZURE_OPENAI_CHATGPT_MODEL string = chatGpt.modelName
 
 // Specific to Azure OpenAI
-output AZURE_OPENAI_SERVICE string = isAzureOpenAiHost && deployAzureOpenAi ? openAi.outputs.name : ''
-output AZURE_OPENAI_ENDPOINT string = isAzureOpenAiHost && deployAzureOpenAi ? openAi.outputs.endpoint : ''
+output AZURE_OPENAI_SERVICE string = isAzureOpenAiHost && deployAzureOpenAi ? openAi!.outputs.name : ''
+output AZURE_OPENAI_ENDPOINT string = isAzureOpenAiHost && deployAzureOpenAi ? openAi!.outputs.endpoint : ''
 output AZURE_OPENAI_RESOURCE_GROUP string = isAzureOpenAiHost ? openAiResourceGroup.name : ''
 output AZURE_OPENAI_CHATGPT_DEPLOYMENT string = isAzureOpenAiHost ? chatGpt.deploymentName : ''
 output AZURE_OPENAI_CHATGPT_DEPLOYMENT_VERSION string = isAzureOpenAiHost ? chatGpt.deploymentVersion : ''
@@ -1455,11 +1550,11 @@ output AZURE_OPENAI_KNOWLEDGEBASE_DEPLOYMENT string = isAzureOpenAiHost && useAg
 output AZURE_OPENAI_KNOWLEDGEBASE_MODEL string = isAzureOpenAiHost && useAgenticKnowledgeBase ? knowledgeBase.modelName : ''
 output AZURE_OPENAI_REASONING_EFFORT string  = defaultReasoningEffort
 output AZURE_SEARCH_KNOWLEDGEBASE_RETRIEVAL_REASONING_EFFORT string = defaultRetrievalReasoningEffort
-output AZURE_SPEECH_SERVICE_ID string = useSpeechOutputAzure ? speech.outputs.resourceId : ''
-output AZURE_SPEECH_SERVICE_LOCATION string = useSpeechOutputAzure ? speech.outputs.location : ''
+output AZURE_SPEECH_SERVICE_ID string = useSpeechOutputAzure ? speech!.outputs.resourceId : ''
+output AZURE_SPEECH_SERVICE_LOCATION string = useSpeechOutputAzure ? speech!.outputs.location : ''
 
-output AZURE_VISION_ENDPOINT string = useMultimodal ? vision.outputs.endpoint : ''
-output AZURE_CONTENTUNDERSTANDING_ENDPOINT string = useMediaDescriberAzureCU ? contentUnderstanding.outputs.endpoint : ''
+output AZURE_VISION_ENDPOINT string = useMultimodal ? vision!.outputs.endpoint : ''
+output AZURE_CONTENTUNDERSTANDING_ENDPOINT string = useMediaDescriberAzureCU ? contentUnderstanding!.outputs.endpoint : ''
 
 output AZURE_DOCUMENTINTELLIGENCE_SERVICE string = documentIntelligence.outputs.name
 output AZURE_DOCUMENTINTELLIGENCE_RESOURCE_GROUP string = documentIntelligenceResourceGroup.name
@@ -1472,7 +1567,7 @@ output AZURE_SEARCH_SEMANTIC_RANKER string = actualSearchServiceSemanticRankerLe
 output AZURE_SEARCH_FIELD_NAME_EMBEDDING string = searchFieldNameEmbedding
 output AZURE_SEARCH_USER_ASSIGNED_IDENTITY_RESOURCE_ID string = searchService.outputs.userAssignedIdentityResourceId
 
-output AZURE_COSMOSDB_ACCOUNT string = (useAuthentication && useChatHistoryCosmos) ? cosmosDb.outputs.name : ''
+output AZURE_COSMOSDB_ACCOUNT string = (useAuthentication && useChatHistoryCosmos) ? cosmosDb!.outputs.name : ''
 output AZURE_CHAT_HISTORY_DATABASE string = chatHistoryDatabaseName
 output AZURE_CHAT_HISTORY_CONTAINER string = chatHistoryContainerName
 output AZURE_CHAT_HISTORY_VERSION string = chatHistoryVersion
@@ -1481,7 +1576,12 @@ output AZURE_STORAGE_ACCOUNT string = storage.outputs.name
 output AZURE_STORAGE_CONTAINER string = storageContainerName
 output AZURE_STORAGE_RESOURCE_GROUP string = storageResourceGroup.name
 
-output AZURE_USERSTORAGE_ACCOUNT string = useUserUpload ? userStorage.outputs.name : ''
+output AZURE_ADLS_STORAGE_ACCOUNT string = useCloudIngestionAcls ? adlsStorageAccountNameResolved : ''
+output AZURE_CLOUD_INGESTION_STORAGE_ACCOUNT string = useCloudIngestionAcls ? adlsStorageAccountNameResolved : storage.outputs.name
+output AZURE_CLOUD_INGESTION_STORAGE_RESOURCE_GROUP string = useCloudIngestionAcls ? adlsStorageResourceGroup.name : storageResourceGroup.name
+output USE_CLOUD_INGESTION_ACLS bool = useCloudIngestionAcls
+
+output AZURE_USERSTORAGE_ACCOUNT string = useUserUpload ? userStorage!.outputs.name : ''
 output AZURE_USERSTORAGE_CONTAINER string = userStorageContainerName
 output AZURE_USERSTORAGE_RESOURCE_GROUP string = storageResourceGroup.name
 
@@ -1496,13 +1596,13 @@ output DOCUMENT_EXTRACTOR_SKILL_AUTH_RESOURCE_ID string = useCloudIngestion ? fu
 output FIGURE_PROCESSOR_SKILL_AUTH_RESOURCE_ID string = useCloudIngestion ? functions!.outputs.figureProcessorAuthIdentifierUri : ''
 output TEXT_PROCESSOR_SKILL_AUTH_RESOURCE_ID string = useCloudIngestion ? functions!.outputs.textProcessorAuthIdentifierUri : ''
 
-output AZURE_AI_PROJECT string = useAiProject ? ai.outputs.projectName : ''
+output AZURE_AI_PROJECT string = useAiProject ? ai!.outputs.projectName : ''
 
 output AZURE_USE_AUTHENTICATION bool = useAuthentication
 
-output BACKEND_URI string = deploymentTarget == 'appservice' ? backend.outputs.uri : acaBackend.outputs.uri
+output BACKEND_URI string = deploymentTarget == 'appservice' ? backend!.outputs.uri : acaBackend!.outputs.uri
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = deploymentTarget == 'containerapps'
-  ? containerApps.outputs.registryLoginServer
+  ? containerApps!.outputs.registryLoginServer
   : ''
 
-output AZURE_VPN_CONFIG_DOWNLOAD_LINK string = useVpnGateway ? 'https://portal.azure.com/#@${tenant().tenantId}/resource${isolation.outputs.virtualNetworkGatewayId}/pointtositeconfiguration' : ''
+output AZURE_VPN_CONFIG_DOWNLOAD_LINK string = useVpnGateway ? 'https://portal.azure.com/#@${tenant().tenantId}/resource${isolation!.outputs.virtualNetworkGatewayId}/pointtositeconfiguration' : ''

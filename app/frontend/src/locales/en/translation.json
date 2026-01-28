@@ -2,7 +2,6 @@
     "pageTitle": "TNO CLA Miner",
     "headerTitle": "TNO CLA Miner",
     "chat": "Chat",
-    "qa": "Ask a question",
     "login": "Login",
     "logout": "Logout",
     "clearChat": "Clear chat",
@@ -55,6 +54,7 @@
 
     "tooltips": {
         "submitQuestion": "Submit question",
+        "stopStreaming": "Stop streaming",
         "askWithVoice": "Ask question with voice",
         "stopRecording": "Stop recording question",
         "showThoughtProcess": "Show thought process",
