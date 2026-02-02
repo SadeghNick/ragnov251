@@ -4,15 +4,20 @@ import { ChatAppResponse, ChatAppResponseOrError, ChatAppRequest, Config, Simple
 import { useLogin, getToken, isUsingAppServicesLogin } from "../authConfig";
 
 export async function getHeaders(idToken: string | undefined): Promise<Record<string, string>> {
-    // If using login and not using app services, add the id token of the logged in account as the authorization
-    if (useLogin && !isUsingAppServicesLogin) {
-        if (idToken) {
-            return { Authorization: `Bearer ${idToken}` };
-        }
+  // existing MSAL logic
+  if (useLogin && !isUsingAppServicesLogin) {
+    if (idToken) {
+      return { Authorization: `Bearer ${idToken}` };
     }
-
-    return {};
+  }
+  // new: fallback to saved JWT
+  const saved = localStorage.getItem("access_token");
+  if (saved) {
+    return { Authorization: `Bearer ${saved}` };
+  }
+  return {};
 }
+
 
 export async function configApi(): Promise<Config> {
     const response = await fetch(`${BACKEND_URI}/config`, {

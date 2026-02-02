@@ -104,6 +104,12 @@ from prepdocslib.blobmanager import AdlsBlobManager, BlobManager
 from prepdocslib.embeddings import ImageEmbeddings
 from prepdocslib.filestrategy import UploadUserFileStrategy
 from prepdocslib.listfilestrategy import File
+# the followings added for login
+import hashlib
+import time
+import jwt
+
+
 
 bp = Blueprint("routes", __name__, static_folder="static")
 # Fix Windows registry issue with mimetypes
@@ -201,6 +207,37 @@ async def format_as_ndjson(r: AsyncGenerator[dict, None]) -> AsyncGenerator[str,
     except Exception as error:
         logging.exception("Exception while generating response stream: %s", error)
         yield json.dumps(error_dict(error))
+
+
+@bp.post("/login")
+async def login():
+    """
+    Very simple login endpoint that checks a username/password against hashed values
+    stored in environment variables.  Returns a JSON web token (JWT) on success.
+    """
+    if not request.is_json:
+        return jsonify({"error": "request must be json"}), 415
+
+    data = await request.get_json()
+    username = (data.get("username") or "").strip().lower()
+    password = data.get("password") or ""
+
+    expected_user = os.getenv("APP_USER", "").lower()
+    expected_hash = os.getenv("APP_PASSHASH", "")
+
+    # Hash the incoming password and compare
+    hashed = hashlib.sha256(password.encode()).hexdigest()
+
+    if username != expected_user or hashed != expected_hash:
+        # Don’t reveal whether the username or password was wrong
+        return jsonify({"error": "Invalid credentials"}), 401
+
+    # Build a short-lived JWT (1‑hour expiry) and return it
+    token_data = {"sub": username, "exp": int(time.time()) + 3600}
+    secret = os.getenv("APP_SECRET_KEY", "default-secret-change-me")
+    token = jwt.encode(token_data, secret, algorithm="HS256")
+    return jsonify({"access_token": token})
+
 
 
 @bp.route("/chat", methods=["POST"])
