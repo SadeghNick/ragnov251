@@ -1,4 +1,6 @@
-import { useState, useNavigate } from "react-router-dom";
+import { useState, useContext } from "react";
+import { useNavigate } from "react-router-dom";
+import { LoginContext } from "../loginContext";
 
 export default function Login() {
   const navigate = useNavigate();
